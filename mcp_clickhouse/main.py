@@ -39,17 +39,20 @@ def main():
     mcp_config = get_mcp_config()
     transport = mcp_config.server_transport
 
-    # Setup any custom middleware
-    setup_middleware(mcp)
-
-    # Open the SSH forward, if configured, *before* the server can serve a tool
-    # call. A client created from the pre-tunnel address would be cached and
-    # would bypass the forward for the rest of the process's life.
+    # Open the SSH forward, if configured, *before* anything else can reach
+    # ClickHouse — including the custom middleware set up below, which is
+    # user-supplied and may touch ClickHouse at import time. A client created
+    # from the pre-tunnel address would be cached and would bypass the forward
+    # for the rest of the process's life.
     tunnel = setup_ssh_tunnel_if_configured()
     if tunnel is not None:
         _install_termination_handlers()
 
     try:
+        # Setup any custom middleware. Inside the try so a failing middleware
+        # import tears the tunnel down instead of leaking the ssh child.
+        setup_middleware(mcp)
+
         # For HTTP and SSE transports, we need to specify host and port
         http_transports = [TransportType.HTTP.value, TransportType.SSE.value]
         if transport in http_transports:
