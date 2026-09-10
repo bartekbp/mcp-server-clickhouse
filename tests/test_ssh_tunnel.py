@@ -1,4 +1,5 @@
 import pathlib
+import signal
 import socket
 import time
 
@@ -174,8 +175,14 @@ def test_start_tunnel_times_out_when_forward_never_comes_up():
     assert 0.3 <= elapsed < 5.0
 
 
-def test_start_tunnel_rejects_missing_key_without_spawning(tmp_path):
+def test_start_tunnel_rejects_missing_key_without_spawning(tmp_path, monkeypatch):
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
     from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    def explode(*args, **kwargs):
+        raise AssertionError("Popen must not be called when the key is missing")
+
+    monkeypatch.setattr(tunnel_mod.subprocess, "Popen", explode)
 
     missing = tmp_path / "nope.pem"
     cfg = minimal_config(ssh_key=str(missing))
@@ -241,7 +248,7 @@ def test_close_falls_back_to_sigkill():
     tunnel.close(grace=0.5)
     elapsed = time.monotonic() - started
 
-    assert tunnel._proc.poll() is not None
+    assert tunnel._proc.poll() == -signal.SIGKILL
     assert 0.4 <= elapsed < 5.0
 
 
@@ -256,7 +263,7 @@ def test_close_does_not_fire_the_runtime_exit_callback():
     )
 
     tunnel.close()
-    time.sleep(0.3)
+    tunnel._watcher.join(timeout=2.0)
 
     assert fired == []
 
