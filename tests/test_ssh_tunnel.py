@@ -147,3 +147,61 @@ def test_start_tunnel_passes_the_remote_target_through_to_ssh(tmp_path):
         assert "bastion.example.com" in recorded
     finally:
         tunnel.close()
+
+
+def test_start_tunnel_reports_early_exit_with_stderr_tail():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    with pytest.raises(TunnelError) as exc:
+        start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-crash.sh"))
+
+    message = str(exc.value)
+    assert "exit 255" in message
+    assert "Permission denied (publickey)." in message
+
+
+def test_start_tunnel_times_out_when_forward_never_comes_up():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    cfg = minimal_config(ready_timeout=0.4)
+
+    started = time.monotonic()
+    with pytest.raises(TunnelError) as exc:
+        start_tunnel(cfg, spawn_path=fake_ssh("fake-ssh-hang.sh"))
+    elapsed = time.monotonic() - started
+
+    assert "readiness timeout" in str(exc.value)
+    assert 0.3 <= elapsed < 5.0
+
+
+def test_start_tunnel_rejects_missing_key_without_spawning(tmp_path):
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    missing = tmp_path / "nope.pem"
+    cfg = minimal_config(ssh_key=str(missing))
+
+    with pytest.raises(TunnelError) as exc:
+        start_tunnel(cfg, spawn_path=fake_ssh("fake-ssh-ok.sh"))
+
+    assert str(missing) in str(exc.value)
+
+
+def test_start_tunnel_accepts_an_existing_key(tmp_path):
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    key = tmp_path / "id.pem"
+    key.write_text("not a real key")
+    cfg = minimal_config(ssh_key=str(key))
+
+    tunnel = start_tunnel(cfg, spawn_path=fake_ssh("fake-ssh-ok.sh"))
+    tunnel.close()
+
+
+def test_start_tunnel_reports_missing_ssh_binary():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    with pytest.raises(TunnelError) as exc:
+        start_tunnel(minimal_config(), spawn_path="/nonexistent/ssh-binary")
+
+    assert "not found on PATH" in str(exc.value)
+    assert "OpenSSH" in str(exc.value)
