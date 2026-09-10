@@ -20,7 +20,13 @@ NATIVE_PROTOCOL_PORTS = frozenset({9000, 9440})
 
 @dataclass(frozen=True)
 class SshTunnelConfig:
-    """A single SSH local port forward to a ClickHouse endpoint."""
+    """A single SSH local port forward to a ClickHouse endpoint.
+
+    The invariants live here rather than only in get_ssh_tunnel_config() so that
+    a directly constructed config cannot carry a value that would produce a
+    malformed ssh command line. The factory still validates first, so a bad
+    environment variable is reported with its own name.
+    """
 
     ssh_host: str
     remote_host: str
@@ -29,6 +35,16 @@ class SshTunnelConfig:
     ssh_port: Optional[int] = None
     ssh_key: Optional[str] = None
     ready_timeout: float = DEFAULT_READY_TIMEOUT
+
+    def __post_init__(self) -> None:
+        if not self.ssh_host or not self.ssh_host.strip():
+            raise ValueError(f"ssh_host must be a non-blank host, got {self.ssh_host!r}")
+        if not 1 <= self.remote_port <= 65535:
+            raise ValueError(f"remote_port must be in 1..65535, got {self.remote_port!r}")
+        if self.ssh_port is not None and not 1 <= self.ssh_port <= 65535:
+            raise ValueError(f"ssh_port must be None or in 1..65535, got {self.ssh_port!r}")
+        if self.ready_timeout <= 0:
+            raise ValueError(f"ready_timeout must be greater than 0, got {self.ready_timeout!r}")
 
 
 def get_ssh_tunnel_config() -> Optional[SshTunnelConfig]:

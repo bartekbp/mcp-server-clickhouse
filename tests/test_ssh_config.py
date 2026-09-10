@@ -1,6 +1,10 @@
 import pytest
 
-from mcp_clickhouse.ssh.config import DEFAULT_READY_TIMEOUT, get_ssh_tunnel_config
+from mcp_clickhouse.ssh.config import (
+    DEFAULT_READY_TIMEOUT,
+    SshTunnelConfig,
+    get_ssh_tunnel_config,
+)
 
 
 def test_returns_none_when_ssh_host_unset(clean_env):
@@ -144,3 +148,68 @@ def test_warns_when_remote_port_is_native_protocol(clean_env, caplog):
     assert cfg.remote_port == 9000
     assert "9000" in caplog.text
     assert "HTTP" in caplog.text
+
+
+class TestDirectConstructionInvariants:
+    """SshTunnelConfig is built directly all over this suite and by any caller
+    that does not go through get_ssh_tunnel_config(), so the invariants have to
+    hold on the type itself, not only in the factory.
+    """
+
+    def test_accepts_a_valid_config(self):
+        cfg = SshTunnelConfig(
+            ssh_host="bastion",
+            remote_host="ch.internal",
+            remote_port=8443,
+            ssh_port=2222,
+            ready_timeout=5.0,
+        )
+
+        assert cfg.ssh_host == "bastion"
+
+    @pytest.mark.parametrize("bad", ["", "   "])
+    def test_rejects_a_blank_ssh_host(self, bad):
+        with pytest.raises(ValueError) as exc:
+            SshTunnelConfig(ssh_host=bad, remote_host="ch.internal", remote_port=8443)
+        assert "ssh_host" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", [0, -1, 65536])
+    def test_rejects_an_out_of_range_remote_port(self, bad):
+        with pytest.raises(ValueError) as exc:
+            SshTunnelConfig(ssh_host="bastion", remote_host="ch.internal", remote_port=bad)
+        assert str(bad) in str(exc.value)
+
+    @pytest.mark.parametrize("bad", [0, -1, 65536])
+    def test_rejects_an_out_of_range_ssh_port(self, bad):
+        with pytest.raises(ValueError) as exc:
+            SshTunnelConfig(
+                ssh_host="bastion", remote_host="ch.internal", remote_port=8443, ssh_port=bad
+            )
+        assert str(bad) in str(exc.value)
+
+    def test_allows_an_absent_ssh_port(self):
+        cfg = SshTunnelConfig(ssh_host="bastion", remote_host="ch.internal", remote_port=8443)
+
+        assert cfg.ssh_port is None
+
+    @pytest.mark.parametrize("bad", [0, -0.5])
+    def test_rejects_a_non_positive_ready_timeout(self, bad):
+        with pytest.raises(ValueError) as exc:
+            SshTunnelConfig(
+                ssh_host="bastion", remote_host="ch.internal", remote_port=8443, ready_timeout=bad
+            )
+        assert str(bad) in str(exc.value)
+
+
+def test_the_factory_reports_the_environment_variable_name_not_the_field(clean_env):
+    """__post_init__ is the backstop; a bad env var still names itself."""
+    clean_env.setenv("CLICKHOUSE_SSH_HOST", "bastion")
+    clean_env.setenv("CLICKHOUSE_HOST", "ch.internal")
+    clean_env.setenv("CLICKHOUSE_USER", "reader")
+    clean_env.setenv("CLICKHOUSE_SECURE", "false")
+    clean_env.setenv("CLICKHOUSE_SSH_PORT", "70000")
+
+    with pytest.raises(ValueError) as exc:
+        get_ssh_tunnel_config()
+
+    assert "CLICKHOUSE_SSH_PORT" in str(exc.value)
