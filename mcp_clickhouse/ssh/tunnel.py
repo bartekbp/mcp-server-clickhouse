@@ -180,24 +180,39 @@ class ActiveTunnel:
         logger.error("[ssh] tunnel exited unexpectedly (code %s). stderr tail: %s", code, tail)
         self._on_runtime_exit(code, tail)
 
-    def close(self, grace: float = SHUTDOWN_GRACE) -> None:
-        """Stop the forward. Safe to call more than once."""
+    @property
+    def exit_code(self) -> Optional[int]:
+        """None while the forward is running; the child's exit status once it has ended."""
+        return self._proc.poll()
+
+    def close(self, grace: float = SHUTDOWN_GRACE) -> bool:
+        """Stop the forward. Safe to call more than once.
+
+        Returns True when the child is known to be reaped, False when it survived
+        SIGKILL and the forward may still be open.
+        """
         if self._closing:
-            return
+            return self._proc.poll() is not None
         self._closing = True
         if self._proc.poll() is not None:
-            return
+            return True
         self._proc.terminate()
         try:
             self._proc.wait(timeout=grace)
-            return
+            return True
         except subprocess.TimeoutExpired:
             logger.warning("[ssh] tunnel ignored SIGTERM; sending SIGKILL")
         self._proc.kill()
         try:
             self._proc.wait(timeout=grace)
+            return True
         except subprocess.TimeoutExpired:
-            logger.error("[ssh] tunnel survived SIGKILL")
+            logger.error(
+                "[ssh] tunnel process %s survived SIGKILL; the forward may still be "
+                "open and must be cleaned up by hand",
+                self._proc.pid,
+            )
+            return False
 
 
 def _default_runtime_exit(code: Optional[int], stderr_tail: str) -> None:
@@ -239,26 +254,37 @@ def start_tunnel(
         raise TunnelError(
             f"SSH tunnel: '{spawn_path}' not found on PATH. Install an OpenSSH client."
         ) from exc
+    except OSError as exc:
+        # Anything else Popen can fail with: the binary is not executable, fd or
+        # process limits are exhausted. The docstring promises TunnelError.
+        raise TunnelError(f"SSH tunnel: failed to start '{spawn_path}': {exc}") from exc
 
     tail = _StderrTail(proc.stderr)
     tail.start()
 
-    deadline = time.monotonic() + cfg.ready_timeout
-    while True:
-        exit_code = proc.poll()
-        if exit_code is not None:
-            tail.join(timeout=1.0)
-            raise TunnelError(f"SSH tunnel failed (exit {exit_code}): {tail.text()}")
-        if try_connect(local_port):
-            break
-        if time.monotonic() >= deadline:
-            _kill_quietly(proc)
-            tail.join(timeout=1.0)
-            raise TunnelError(
-                f"SSH tunnel readiness timeout: 127.0.0.1:{local_port} did not accept "
-                f"within {cfg.ready_timeout}s. ssh stderr: {tail.text()}"
-            )
-        time.sleep(READINESS_POLL_INTERVAL)
+    # Nothing below may leave the child running: until ActiveTunnel exists, no
+    # one else holds a reference to reap it. BaseException covers a Ctrl-C or a
+    # SystemExit arriving mid-wait, which is exactly when a leak would happen.
+    try:
+        deadline = time.monotonic() + cfg.ready_timeout
+        while True:
+            exit_code = proc.poll()
+            if exit_code is not None:
+                tail.join(timeout=1.0)
+                raise TunnelError(f"SSH tunnel failed (exit {exit_code}): {tail.text()}")
+            if try_connect(local_port):
+                break
+            if time.monotonic() >= deadline:
+                _kill_quietly(proc)
+                tail.join(timeout=1.0)
+                raise TunnelError(
+                    f"SSH tunnel readiness timeout: 127.0.0.1:{local_port} did not accept "
+                    f"within {cfg.ready_timeout}s. ssh stderr: {tail.text()}"
+                )
+            time.sleep(READINESS_POLL_INTERVAL)
+    except BaseException:
+        _kill_quietly(proc)
+        raise
 
     return ActiveTunnel(local_port, proc, tail, on_runtime_exit)
 

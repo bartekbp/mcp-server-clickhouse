@@ -59,16 +59,20 @@ def main():
     mcp_config = get_mcp_config()
     transport = mcp_config.server_transport
 
-    # Open the SSH forward, if configured, *before* anything else can reach
-    # ClickHouse — including the custom middleware set up below, which is
-    # user-supplied and may touch ClickHouse at import time. A client created
-    # from the pre-tunnel address would be cached and would bypass the forward
-    # for the rest of the process's life.
-    tunnel = setup_ssh_tunnel_if_configured()
-    if tunnel is not None:
-        _install_termination_handlers()
-
+    tunnel = None
     try:
+        # Open the SSH forward, if configured, *before* anything else can reach
+        # ClickHouse - including the custom middleware set up below, which is
+        # user-supplied and may touch ClickHouse at import time. A client created
+        # from the pre-tunnel address would be cached and would bypass the forward
+        # for the rest of the process's life.
+        #
+        # Inside the try so that a signal arriving during ssh authentication or
+        # the readiness wait still reaches the teardown below. on_configured fires
+        # only when a tunnel is actually configured, so the unset-SSH path installs
+        # no handler and keeps upstream's signal behaviour exactly.
+        tunnel = setup_ssh_tunnel_if_configured(on_configured=_install_termination_handlers)
+
         # Setup any custom middleware. Inside the try so a failing middleware
         # import tears the tunnel down instead of leaking the ssh child.
         setup_middleware(mcp)
