@@ -16,6 +16,13 @@ def _install_termination_handlers() -> None:
     both `finally` blocks and atexit handlers, which would strand the ssh child.
     Only installed when a tunnel is actually running, so the no-tunnel path keeps
     upstream's signal behaviour exactly.
+
+    On the HTTP/SSE transports, uvicorn's Server.capture_signals() temporarily
+    overwrites this handler for the duration of serve(), then restores it and
+    re-raises the captured signal via signal.raise_signal() once serve() returns.
+    So this handler still fires and mcp.run()'s finally still tears down the
+    tunnel, but only after uvicorn's graceful-shutdown window (fastmcp sets
+    timeout_graceful_shutdown=2), i.e. up to ~2s later than on stdio.
     """
 
     def _handler(signum, _frame):
