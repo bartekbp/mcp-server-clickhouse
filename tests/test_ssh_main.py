@@ -4,18 +4,28 @@ from unittest import mock
 import pytest
 
 from mcp_clickhouse import main as main_module
+from mcp_clickhouse.ssh import shutdown_requested
 
 
 @pytest.fixture(autouse=True)
-def restore_sigterm():
-    """main() really installs a SIGTERM handler when a tunnel is present.
+def restore_signal_handlers():
+    """main() really installs SIGTERM and SIGINT handlers when a tunnel is present.
 
     Without this, a test that exercises the tunnel path permanently rewires the
-    pytest process's SIGTERM disposition for every test that runs after it.
+    pytest process's signal dispositions for every test that runs after it.
     """
-    previous = signal.getsignal(signal.SIGTERM)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     yield
-    signal.signal(signal.SIGTERM, previous)
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
+
+
+@pytest.fixture(autouse=True)
+def clear_shutdown_flag():
+    """The shutdown flag is module-level state shared by every test in the process."""
+    shutdown_requested.clear()
+    yield
+    shutdown_requested.clear()
 
 
 def test_main_runs_without_a_tunnel_when_unconfigured(clean_env):
@@ -93,15 +103,32 @@ def test_main_closes_the_tunnel_when_the_server_raises(clean_env):
     shutdown.assert_called_once_with(fake_tunnel)
 
 
-def test_sigterm_handler_raises_system_exit():
+def _installed_handlers():
     with mock.patch("signal.signal") as sig:
         main_module._install_termination_handlers()
 
     assert sig.called
-    handler = sig.call_args_list[0].args[1]
+    return {call.args[0]: call.args[1] for call in sig.call_args_list}
+
+
+def test_sigterm_handler_raises_system_exit_and_flags_shutdown():
+    handler = _installed_handlers()[signal.SIGTERM]
+
     try:
         handler(signal.SIGTERM, None)
     except SystemExit as exc:
         assert exc.code == 128 + int(signal.SIGTERM)
     else:
         raise AssertionError("handler did not raise SystemExit")
+
+    assert shutdown_requested.is_set()
+
+
+def test_sigint_handler_raises_keyboard_interrupt_and_flags_shutdown():
+    """The tunnel watcher reads the flag to tell a co-shutdown from a crash."""
+    handler = _installed_handlers()[signal.SIGINT]
+
+    with pytest.raises(KeyboardInterrupt):
+        handler(signal.SIGINT, None)
+
+    assert shutdown_requested.is_set()

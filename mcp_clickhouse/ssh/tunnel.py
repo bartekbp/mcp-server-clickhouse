@@ -23,8 +23,12 @@ logger = logging.getLogger("mcp-clickhouse.ssh")
 
 READINESS_POLL_INTERVAL = 0.05
 SHUTDOWN_GRACE = 3.0
-STDERR_TAIL_BYTES = 500
+STDERR_TAIL_CHARS = 500
 _CONNECT_PROBE_TIMEOUT = 0.5
+
+# Set by main()'s termination handlers before they unwind the process, so the
+# tunnel watcher can tell an intentional shutdown from a forward that died on us.
+shutdown_requested = threading.Event()
 
 
 class TunnelError(RuntimeError):
@@ -119,7 +123,7 @@ class _StderrTail(threading.Thread):
                     continue
                 logger.info("[ssh] %s", line)
                 with self._lock:
-                    self._buf = (self._buf + line + "\n")[-STDERR_TAIL_BYTES:]
+                    self._buf = (self._buf + line + "\n")[-STDERR_TAIL_CHARS:]
         finally:
             try:
                 self._stream.close()
@@ -151,14 +155,28 @@ class ActiveTunnel:
 
     def _watch(self) -> None:
         code = self._proc.wait()
-        # A negative code means the child was signalled. SIGINT/SIGHUP reach it only
-        # via the terminal's process group, i.e. we were signalled too — that is a
-        # shutdown in progress, not a tunnel crash. Treating it as a crash here would
-        # call os._exit() from this thread and skip main()'s teardown entirely.
-        if self._closing or code in (-signal.SIGINT, -signal.SIGHUP, -signal.SIGTERM):
+        if self._closing:
             return
         self._tail.join(timeout=1.0)
         tail = self._tail.text()
+        # A negative code means the child was signalled. Our own shutdown, or a
+        # Ctrl-C/hangup delivered to the whole foreground process group, reaches
+        # the child too - that is co-shutdown, not a crash. We cannot distinguish
+        # that from someone signalling the ssh child alone (pkill ssh), so log it
+        # rather than returning silently: the forward is gone either way.
+        if shutdown_requested.is_set() or code in (
+            -signal.SIGINT,
+            -signal.SIGHUP,
+            -signal.SIGTERM,
+        ):
+            logger.warning(
+                "[ssh] tunnel exited (code %s) during shutdown or via a shared "
+                "terminal signal; not treating it as a crash. If you did not stop "
+                "the server, the forward is now dead. stderr tail: %s",
+                code,
+                tail,
+            )
+            return
         logger.error("[ssh] tunnel exited unexpectedly (code %s). stderr tail: %s", code, tail)
         self._on_runtime_exit(code, tail)
 
