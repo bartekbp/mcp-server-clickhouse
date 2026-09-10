@@ -6,14 +6,31 @@ Ported from bartekbp/mcp-server-mysql (src/ssh/tunnel.ts, src/ssh/startup.ts).
 from __future__ import annotations
 
 from .config import DEFAULT_READY_TIMEOUT, SshTunnelConfig, get_ssh_tunnel_config
-from .tunnel import TunnelError, build_ssh_argv, pick_free_port, wait_for_tcp_ready
+from .startup import (
+    apply_tunnel_to_environment,
+    setup_ssh_tunnel_if_configured,
+    shutdown_ssh_tunnel,
+)
+from .tunnel import (
+    ActiveTunnel,
+    TunnelError,
+    build_ssh_argv,
+    pick_free_port,
+    start_tunnel,
+    wait_for_tcp_ready,
+)
 
 __all__ = [
     "DEFAULT_READY_TIMEOUT",
+    "ActiveTunnel",
     "SshTunnelConfig",
     "TunnelError",
+    "apply_tunnel_to_environment",
     "build_ssh_argv",
     "get_ssh_tunnel_config",
     "pick_free_port",
+    "setup_ssh_tunnel_if_configured",
+    "shutdown_ssh_tunnel",
+    "start_tunnel",
     "wait_for_tcp_ready",
 ]
