@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -149,7 +150,11 @@ class ActiveTunnel:
 
     def _watch(self) -> None:
         code = self._proc.wait()
-        if self._closing:
+        # A negative code means the child was signalled. SIGINT/SIGHUP reach it only
+        # via the terminal's process group, i.e. we were signalled too — that is a
+        # shutdown in progress, not a tunnel crash. Treating it as a crash here would
+        # call os._exit() from this thread and skip main()'s teardown entirely.
+        if self._closing or code in (-signal.SIGINT, -signal.SIGHUP, -signal.SIGTERM):
             return
         self._tail.join(timeout=1.0)
         tail = self._tail.text()

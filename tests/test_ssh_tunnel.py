@@ -1,6 +1,10 @@
+import os
 import pathlib
 import signal
 import socket
+import subprocess
+import sys
+import textwrap
 import time
 
 import pytest
@@ -289,3 +293,98 @@ def test_runtime_exit_callback_fires_when_the_tunnel_dies():
 
     assert fired.wait(timeout=5.0), "on_runtime_exit never fired"
     assert captured["code"] is not None
+
+
+CTRL_C_CHILD = """
+import sys, time
+
+from mcp_clickhouse.ssh.config import SshTunnelConfig
+from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+marker, ready, spawn = sys.argv[1], sys.argv[2], sys.argv[3]
+
+cfg = SshTunnelConfig(
+    ssh_host="bastion.example.com", remote_host="ch.internal", remote_port=8443
+)
+tunnel = start_tunnel(cfg, spawn_path=spawn)
+try:
+    with open(ready, "w") as fh:
+        fh.write("ready")
+    while True:
+        time.sleep(0.05)
+finally:
+    # Real teardown takes real time: mcp.run() unwinds through the transport and
+    # shutdown_ssh_tunnel() drains every cached ClickHouse client first. Sleeping
+    # reproduces that window. A watcher thread that mistakes a shared SIGINT for a
+    # tunnel crash calls os._exit(1) inside it and this marker is never written.
+    time.sleep(1.0)
+    with open(marker, "w") as fh:
+        fh.write("teardown ran")
+    tunnel.close()
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups and SIGINT")
+def test_ctrl_c_lets_teardown_run_instead_of_exiting_from_the_watcher(tmp_path):
+    """Ctrl-C signals the whole foreground process group, ssh child included.
+
+    The watcher thread sees ssh die first. If it treated that as a crash it would
+    call os._exit(1) and skip the caller's teardown entirely, which is what this
+    test guards against: the marker file proves the `finally` ran.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    marker = tmp_path / "teardown.txt"
+    ready = tmp_path / "ready.txt"
+
+    env = dict(os.environ)
+    # _default_runtime_exit no-ops when it sees this, which would mask the bug.
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env["CLICKHOUSE_ENABLED"] = "false"
+    env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")]).rstrip(
+        os.pathsep
+    )
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(CTRL_C_CHILD),
+            str(marker),
+            str(ready),
+            fake_ssh("fake-ssh-ok.sh"),
+        ],
+        cwd=str(repo_root),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # Give the child its own process group so killpg mimics a terminal's
+        # Ctrl-C without signalling pytest itself.
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 60.0
+        while not ready.exists():
+            assert proc.poll() is None, (
+                f"child died before the tunnel came up: {proc.communicate()}"
+            )
+            assert time.monotonic() < deadline, "child never reported a ready tunnel"
+            time.sleep(0.05)
+
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=60.0)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.kill()
+            proc.wait(timeout=30.0)
+
+    detail = stderr.decode("utf-8", "replace")
+    assert marker.exists(), f"teardown never ran after SIGINT. stderr: {detail}"
+    assert marker.read_text() == "teardown ran"
+    # os._exit(1) from the watcher thread is the failure being guarded against.
+    assert proc.returncode != 1, f"process exited 1, as os._exit would. stderr: {detail}"
+    assert "exited unexpectedly" not in detail, f"logged a false crash: {detail}"
