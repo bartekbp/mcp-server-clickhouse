@@ -52,10 +52,29 @@ def test_build_ssh_argv_minimal():
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-L",
-        "34567:ch.internal:8443",
+        "127.0.0.1:34567:ch.internal:8443",
         "--",
         "bastion.example.com",
     ]
+
+
+def test_build_ssh_argv_binds_the_forward_to_loopback_only():
+    """An explicit bind address stops ssh inheriting GatewayPorts."""
+    argv = build_ssh_argv(minimal_config(), 34567)
+
+    assert argv[argv.index("-L") + 1].startswith("127.0.0.1:")
+
+
+def test_build_ssh_argv_brackets_an_ipv6_remote_host():
+    argv = build_ssh_argv(minimal_config(remote_host="2001:db8::1"), 34567)
+
+    assert argv[argv.index("-L") + 1] == "127.0.0.1:34567:[2001:db8::1]:8443"
+
+
+def test_build_ssh_argv_does_not_double_bracket_an_ipv6_remote_host():
+    argv = build_ssh_argv(minimal_config(remote_host="[2001:db8::1]"), 34567)
+
+    assert argv[argv.index("-L") + 1] == "127.0.0.1:34567:[2001:db8::1]:8443"
 
 
 def test_build_ssh_argv_includes_optional_flags():
@@ -65,7 +84,7 @@ def test_build_ssh_argv_includes_optional_flags():
 
     assert argv[-10:] == [
         "-L",
-        "1234:ch.internal:8443",
+        "127.0.0.1:1234:ch.internal:8443",
         "-l",
         "ec2-user",
         "-p",
@@ -129,7 +148,7 @@ def test_start_tunnel_passes_the_remote_target_through_to_ssh(tmp_path):
     tunnel = start_tunnel(cfg, spawn_path=str(script))
     try:
         recorded = recorder.read_text().splitlines()
-        assert f"{tunnel.local_port}:ch.internal:8443" in recorded
+        assert f"127.0.0.1:{tunnel.local_port}:ch.internal:8443" in recorded
         assert "bastion.example.com" in recorded
     finally:
         tunnel.close()
