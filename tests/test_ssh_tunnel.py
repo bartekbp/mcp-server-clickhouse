@@ -220,6 +220,73 @@ def test_start_tunnel_accepts_an_existing_key(tmp_path):
     tunnel.close()
 
 
+def test_start_tunnel_wraps_a_non_executable_ssh_in_tunnel_error(monkeypatch):
+    """The docstring promises TunnelError; PermissionError used to escape raw."""
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tunnel_mod.subprocess, "Popen", refuse)
+
+    with pytest.raises(TunnelError) as exc:
+        start_tunnel(minimal_config(), spawn_path="/usr/bin/ssh")
+
+    assert "failed to start '/usr/bin/ssh'" in str(exc.value)
+
+
+def test_start_tunnel_reaps_the_child_after_a_readiness_timeout():
+    """A leaked ssh child would hold the forward open with nobody to close it."""
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    spawned = []
+    real_popen = tunnel_mod.subprocess.Popen
+
+    def remember(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    original = tunnel_mod.subprocess.Popen
+    tunnel_mod.subprocess.Popen = remember
+    try:
+        with pytest.raises(TunnelError, match="readiness timeout"):
+            start_tunnel(minimal_config(ready_timeout=0.4), spawn_path=fake_ssh("fake-ssh-hang.sh"))
+    finally:
+        tunnel_mod.subprocess.Popen = original
+
+    assert len(spawned) == 1
+    assert spawned[0].poll() is not None, "ssh child was left running after the timeout"
+
+
+def test_start_tunnel_reaps_the_child_when_the_readiness_wait_is_interrupted(monkeypatch):
+    """A Ctrl-C during the readiness wait must not strand the ssh child."""
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    spawned = []
+    real_popen = tunnel_mod.subprocess.Popen
+
+    def remember(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    def interrupt(_port):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tunnel_mod.subprocess, "Popen", remember)
+    monkeypatch.setattr(tunnel_mod, "try_connect", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-hang.sh"))
+
+    assert len(spawned) == 1
+    assert spawned[0].poll() is not None, "ssh child was left running after KeyboardInterrupt"
+
+
 def test_start_tunnel_reports_missing_ssh_binary():
     from mcp_clickhouse.ssh.tunnel import start_tunnel
 
@@ -251,8 +318,20 @@ def test_close_is_idempotent():
     from mcp_clickhouse.ssh.tunnel import start_tunnel
 
     tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ok.sh"))
-    tunnel.close()
-    tunnel.close()
+    assert tunnel.close() is True
+    assert tunnel.close() is True
+
+
+def test_exit_code_is_none_while_the_forward_is_running():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ok.sh"))
+    try:
+        assert tunnel.exit_code is None
+    finally:
+        tunnel.close()
+
+    assert tunnel.exit_code is not None
 
 
 def test_close_falls_back_to_sigkill():
@@ -261,10 +340,11 @@ def test_close_falls_back_to_sigkill():
     tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ignore-sigterm.sh"))
 
     started = time.monotonic()
-    tunnel.close(grace=0.5)
+    reaped = tunnel.close(grace=0.5)
     elapsed = time.monotonic() - started
 
-    assert tunnel._proc.poll() == -signal.SIGKILL
+    assert reaped is True
+    assert tunnel.exit_code == -signal.SIGKILL
     assert 0.4 <= elapsed < 5.0
 
 
