@@ -1,3 +1,4 @@
+import pathlib
 import socket
 import time
 
@@ -102,3 +103,47 @@ def test_wait_for_tcp_ready_times_out_on_dead_port():
 
     assert str(port) in str(exc.value)
     assert 0.25 <= elapsed < 3.0
+
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "ssh"
+
+
+def fake_ssh(name: str) -> str:
+    path = FIXTURES / name
+    assert path.exists(), f"missing fixture {path}"
+    return str(path)
+
+
+def test_start_tunnel_returns_once_the_forward_accepts():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel, try_connect
+
+    tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ok.sh"))
+    try:
+        assert tunnel.local_port > 0
+        assert try_connect(tunnel.local_port)
+    finally:
+        tunnel.close()
+
+
+def test_start_tunnel_passes_the_remote_target_through_to_ssh(tmp_path):
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    recorder = tmp_path / "argv.txt"
+    script = tmp_path / "record-ssh.sh"
+    # Absolute path to the fixture: the wrapper lives in tmp_path, so a relative
+    # path would not resolve.
+    script.write_text(
+        "#!/usr/bin/env sh\n"
+        f'printf "%s\\n" "$@" > {recorder}\n'
+        f'exec {fake_ssh("fake-ssh-ok.sh")} "$@"\n'
+    )
+    script.chmod(0o755)
+
+    cfg = minimal_config(remote_host="ch.internal", remote_port=8443)
+    tunnel = start_tunnel(cfg, spawn_path=str(script))
+    try:
+        recorded = recorder.read_text().splitlines()
+        assert f"{tunnel.local_port}:ch.internal:8443" in recorded
+        assert "bastion.example.com" in recorded
+    finally:
+        tunnel.close()
