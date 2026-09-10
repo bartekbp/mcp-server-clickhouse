@@ -99,7 +99,6 @@ def test_rejects_bad_ready_timeout(clean_env, bad):
 
 def test_missing_clickhouse_host_is_a_clear_error(clean_env):
     clean_env.setenv("CLICKHOUSE_SSH_HOST", "bastion")
-    clean_env.setenv("CLICKHOUSE_ENABLED", "false")
 
     with pytest.raises(ValueError) as exc:
         get_ssh_tunnel_config()
