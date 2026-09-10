@@ -43,6 +43,17 @@ def pick_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _bracket_ipv6(host: str) -> str:
+    """Wrap a bare IPv6 literal in brackets so an -L spec stays parseable.
+
+    Without this, "2001:db8::1" turns into "...:2001:db8::1:8443", which ssh
+    rejects. An already-bracketed host is left alone.
+    """
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        return f"[{host}]"
+    return host
+
+
 def build_ssh_argv(cfg: SshTunnelConfig, local_port: int) -> list[str]:
     """Build the ssh arguments (without the binary name) for the forward."""
     argv = [
@@ -60,8 +71,12 @@ def build_ssh_argv(cfg: SshTunnelConfig, local_port: int) -> list[str]:
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=accept-new",
+        # Bind the listener explicitly to loopback. Without a bind address ssh
+        # falls back to the user's GatewayPorts setting, and a GatewayPorts=yes
+        # in ~/.ssh/config would publish this private ClickHouse endpoint on
+        # every interface of this machine.
         "-L",
-        f"{local_port}:{cfg.remote_host}:{cfg.remote_port}",
+        f"127.0.0.1:{local_port}:{_bracket_ipv6(cfg.remote_host)}:{cfg.remote_port}",
     ]
     if cfg.ssh_user:
         argv += ["-l", cfg.ssh_user]

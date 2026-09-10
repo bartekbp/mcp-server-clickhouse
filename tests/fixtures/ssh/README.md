@@ -1,7 +1,7 @@
 # Fake SSH fixtures
 
 Shell scripts that stand in for the `ssh` binary in unit tests. Each parses the
-`-L localPort:remoteHost:remotePort` argument and simulates one scenario. Tests
+`-L bindAddr:localPort:remoteHost:remotePort` argument and simulates one scenario. Tests
 select one by passing its path as `start_tunnel(..., spawn_path=...)`, so no real
 SSH server, key, or network is needed.
 

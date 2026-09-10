@@ -5,7 +5,7 @@ LOCAL_PORT=""
 next_is_L=""
 for arg in "$@"; do
   if [ "$next_is_L" = "1" ]; then
-    LOCAL_PORT=$(echo "$arg" | cut -d: -f1)
+    LOCAL_PORT=$(echo "$arg" | cut -d: -f2)
     next_is_L=""
     break
   fi
