@@ -68,6 +68,10 @@ def shutdown_ssh_tunnel(tunnel: ActiveTunnel) -> None:
     to a dead local port during their own teardown.
     """
     try:
+        # Deferred to avoid a module-scope circular import between this
+        # package and mcp_server, not to limit import weight: importing
+        # mcp_clickhouse.ssh already pulls in mcp_server transitively, since
+        # mcp_clickhouse/__init__.py imports it at package scope.
         from .. import mcp_server
 
         mcp_server._shutdown()
