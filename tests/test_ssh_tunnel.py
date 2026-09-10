@@ -1,3 +1,4 @@
+import logging
 import os
 import pathlib
 import signal
@@ -5,6 +6,7 @@ import socket
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -15,6 +17,16 @@ from mcp_clickhouse.ssh.tunnel import (
     build_ssh_argv,
     pick_free_port,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_shutdown_flag():
+    """shutdown_requested is process-wide state; never let it leak between tests."""
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
+
+    tunnel_mod.shutdown_requested.clear()
+    yield
+    tunnel_mod.shutdown_requested.clear()
 
 
 def minimal_config(**overrides) -> SshTunnelConfig:
@@ -273,8 +285,6 @@ def test_close_does_not_fire_the_runtime_exit_callback():
 
 
 def test_runtime_exit_callback_fires_when_the_tunnel_dies():
-    import threading
-
     from mcp_clickhouse.ssh.tunnel import start_tunnel
 
     fired = threading.Event()
@@ -293,6 +303,61 @@ def test_runtime_exit_callback_fires_when_the_tunnel_dies():
 
     assert fired.wait(timeout=5.0), "on_runtime_exit never fired"
     assert captured["code"] is not None
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_a_signalled_tunnel_exit_is_logged_rather_than_swallowed(caplog, sig):
+    """Suppressing the crash path must never be silent.
+
+    A shared Ctrl-C reaches the ssh child too, so this cannot become a hard
+    exit. But `pkill ssh` looks identical from here and really does kill the
+    forward, so it has to be visible at WARNING, which the project's default
+    INFO logging shows.
+    """
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    fired = threading.Event()
+    tunnel = start_tunnel(
+        minimal_config(),
+        spawn_path=fake_ssh("fake-ssh-ok.sh"),
+        on_runtime_exit=lambda code, tail: fired.set(),
+    )
+    try:
+        with caplog.at_level(logging.WARNING, logger="mcp-clickhouse.ssh"):
+            tunnel._proc.send_signal(sig)
+            tunnel._watcher.join(timeout=5.0)
+            assert not tunnel._watcher.is_alive()
+    finally:
+        tunnel.close()
+
+    assert not fired.is_set(), "a co-shutdown signal must not trigger the crash exit"
+    assert "not treating it as a crash" in caplog.text
+    assert "the forward is now dead" in caplog.text
+
+
+def test_shutdown_flag_suppresses_the_crash_path_for_any_exit_code(caplog):
+    from mcp_clickhouse.ssh import tunnel as tunnel_mod
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    fired = threading.Event()
+    tunnel = start_tunnel(
+        minimal_config(),
+        spawn_path=fake_ssh("fake-ssh-ok.sh"),
+        on_runtime_exit=lambda code, tail: fired.set(),
+    )
+    tunnel_mod.shutdown_requested.set()
+    try:
+        with caplog.at_level(logging.WARNING, logger="mcp-clickhouse.ssh"):
+            # SIGKILL is not one of the co-shutdown signals; only the flag saves it.
+            tunnel._proc.kill()
+            tunnel._watcher.join(timeout=5.0)
+            assert not tunnel._watcher.is_alive()
+    finally:
+        tunnel_mod.shutdown_requested.clear()
+        tunnel.close()
+
+    assert not fired.is_set()
+    assert "not treating it as a crash" in caplog.text
 
 
 CTRL_C_CHILD = """

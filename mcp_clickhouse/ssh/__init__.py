@@ -16,6 +16,7 @@ from .tunnel import (
     TunnelError,
     build_ssh_argv,
     pick_free_port,
+    shutdown_requested,
     start_tunnel,
     try_connect,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "get_ssh_tunnel_config",
     "pick_free_port",
     "setup_ssh_tunnel_if_configured",
+    "shutdown_requested",
     "shutdown_ssh_tunnel",
     "start_tunnel",
     "try_connect",
