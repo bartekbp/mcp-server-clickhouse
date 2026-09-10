@@ -754,6 +754,11 @@ Set `CLICKHOUSE_SSH_HOST` to enable it. With that unset, nothing changes.
 endpoint **as seen from the bastion**. You do not pick or manage a local port —
 a free one is chosen at startup.
 
+The forward is bound explicitly to `127.0.0.1`, so it is reachable only from this
+machine. It does not inherit a `GatewayPorts` setting from your `~/.ssh/config`
+or from `/etc/ssh/ssh_config`, which would otherwise publish the private
+ClickHouse endpoint on every interface.
+
 Your `~/.ssh/config` is honoured for the host you name, including `Hostname`,
 `ProxyJump`, and `IdentityFile`. Note the override direction: `CLICKHOUSE_SSH_USER`
 and `CLICKHOUSE_SSH_PORT` are passed as `-l` and `-p`, which **override** the `User`
@@ -812,9 +817,19 @@ Requirements and limits:
   looks clean and the first query fails with a connection reset *from `127.0.0.1`*;
   the real cause appears only as an `[ssh] channel N: open failed: connect failed:
   Connection refused` line at INFO level.
-- If the forward dies while the server is running, the server logs `ssh`'s stderr
-  and exits so your MCP client can restart it. A silently dead forward would make
-  every later query fail against a closed port.
+- If `ssh` exits on its own while the server is running (an authentication
+  failure, `ExitOnForwardFailure`, a crash, the bastion dropping the session),
+  the server logs `ssh`'s stderr at ERROR and exits so your MCP client can
+  restart it. A silently dead forward would make every later query fail against
+  a closed port.
+- If the `ssh` child is instead *signalled* with `SIGINT`, `SIGHUP` or `SIGTERM`,
+  the server treats it as a shared shutdown and does **not** exit. A Ctrl-C or a
+  hangup goes to the whole foreground process group, `ssh` included, so exiting
+  there would abort the server's own teardown. The case that cannot be told apart
+  from this is someone signalling the `ssh` process alone (`pkill ssh`), which
+  really does kill the forward, so it is logged at WARNING rather than passing
+  silently. If you see `[ssh] tunnel exited ... not treating it as a crash` and
+  you did not stop the server, the forward is dead and the server needs a restart.
 - If the server itself is killed with `SIGKILL` (`kill -9`), the `ssh` child
   survives — reparented to pid 1, still holding the forward open — because there is
   no portable POSIX way to tie a child's lifetime to its parent's; repeated hard
