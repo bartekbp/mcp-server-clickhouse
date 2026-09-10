@@ -192,6 +192,18 @@ connections that will never recover. Exiting surfaces the problem immediately an
 MCP client restart the server. It is injectable via `on_runtime_exit` so tests can observe
 it without killing the test runner.
 
+## Notes for the implementer
+
+- **`.env` is already loaded by the time `main()` runs.** `mcp_server.py` calls
+  `_load_default_dotenv()` at module import (line 169), and `main.py` imports `mcp_server`
+  at the top, so reading `CLICKHOUSE_*` inside `main()` sees `.env` values. No extra
+  dotenv handling is needed in the SSH package.
+- **Upstream's native-protocol-port warning is suppressed under a tunnel.**
+  `_warn_for_native_protocol_port` fires when `CLICKHOUSE_PORT` is 9000 or 9440, but after
+  the rewrite the port is a random local one, so a native remote port no longer triggers
+  it. `get_ssh_tunnel_config()` therefore emits the equivalent warning against the
+  *remote* port before the rewrite.
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
