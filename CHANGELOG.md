@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased (fork)
+
+- Added optional SSH bastion tunnelling. Setting `CLICKHOUSE_SSH_HOST` makes the
+  server open an SSH local port forward to `CLICKHOUSE_HOST:CLICKHOUSE_PORT` at
+  startup, point the ClickHouse client at it, and close it on shutdown. Also
+  reads `CLICKHOUSE_SSH_USER`, `CLICKHOUSE_SSH_PORT`, `CLICKHOUSE_SSH_KEY` and
+  `CLICKHOUSE_SSH_READY_TIMEOUT`. When unset, behaviour is unchanged.
+
 ## Unreleased
 
 ### Added

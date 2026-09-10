@@ -1,5 +1,9 @@
 # ClickHouse MCP Server
 
+> **Fork.** This is a fork of [ClickHouse/mcp-clickhouse](https://github.com/ClickHouse/mcp-clickhouse)
+> that adds [SSH bastion tunnelling](#ssh-bastion-tunnel) for ClickHouse servers reachable
+> only through a jump host. Everything else tracks upstream.
+
 <!-- mcp-name: io.github.ClickHouse/mcp-clickhouse -->
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
@@ -609,6 +613,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 | Group | Variables | Controls |
 |-------|-----------|----------|
 | **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, certificate variables | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
+| **SSH bastion tunnel** (fork addition) | `CLICKHOUSE_SSH_HOST`, `CLICKHOUSE_SSH_USER`, `CLICKHOUSE_SSH_PORT`, `CLICKHOUSE_SSH_KEY`, `CLICKHOUSE_SSH_READY_TIMEOUT` | Optional SSH forward when ClickHouse is only reachable through a bastion |
 | **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*`, `FASTMCP_ENV_FILE` | MCP transport, authentication, and query-tool execution limits |
 | **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
 
@@ -725,6 +730,66 @@ ClickHouse Cloud does not support X.509 client certificate authentication for da
 Use `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for ClickHouse Cloud. A CA certificate can
 still be useful when a private proxy in front of an endpoint presents a certificate signed by
 a private CA.
+
+#### SSH bastion tunnel
+
+> [!NOTE]
+> This is an addition in this fork, not present in upstream `ClickHouse/mcp-clickhouse`.
+
+When ClickHouse is only routable from inside a private network, the server can open
+an SSH local port forward at startup and talk to ClickHouse through it. The forward
+is torn down when the server exits.
+
+Set `CLICKHOUSE_SSH_HOST` to enable it. With that unset, nothing changes.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `CLICKHOUSE_SSH_HOST` | to enable | — | Bastion / jump host. A `~/.ssh/config` `Host` alias works, including one with `ProxyJump` |
+| `CLICKHOUSE_SSH_USER` | no | ssh default | Login user on the bastion |
+| `CLICKHOUSE_SSH_PORT` | no | `22` | SSH port on the bastion |
+| `CLICKHOUSE_SSH_KEY` | no | ssh default | Identity file; `~` is expanded and the path is checked at startup |
+| `CLICKHOUSE_SSH_READY_TIMEOUT` | no | `10` | Seconds to wait for the forward to accept connections |
+
+`CLICKHOUSE_HOST` and `CLICKHOUSE_PORT` keep their usual meaning: the ClickHouse
+endpoint **as seen from the bastion**. You do not pick or manage a local port —
+a free one is chosen at startup.
+
+When `CLICKHOUSE_SECURE=true`, the server also sets `CLICKHOUSE_SERVER_HOST_NAME`
+to the real ClickHouse host so TLS still verifies through the forward, unless you
+have set that variable yourself.
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.12", "mcp-clickhouse"],
+      "env": {
+        "CLICKHOUSE_HOST": "clickhouse.internal",
+        "CLICKHOUSE_PORT": "8443",
+        "CLICKHOUSE_USER": "reporting_reader",
+        "CLICKHOUSE_PASSWORD": "<password>",
+        "CLICKHOUSE_DATABASE": "reporting",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_SSH_HOST": "bastion.example.com",
+        "CLICKHOUSE_SSH_USER": "ec2-user",
+        "CLICKHOUSE_SSH_KEY": "~/.ssh/bastion.pem"
+      }
+    }
+  }
+}
+```
+
+Requirements and limits:
+
+- An OpenSSH client (`ssh`) on `PATH`. macOS and Linux only.
+- Key-based auth only — the forward is opened with `BatchMode=yes`, so a key that
+  needs an interactive passphrase fails fast rather than hanging. Use `ssh-agent`.
+- If the forward dies while the server is running, the server logs `ssh`'s stderr
+  and exits so your MCP client can restart it. A silently dead forward would make
+  every later query fail against a closed port.
 
 #### MCP server and transport
 
