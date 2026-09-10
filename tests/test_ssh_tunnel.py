@@ -205,3 +205,80 @@ def test_start_tunnel_reports_missing_ssh_binary():
 
     assert "not found on PATH" in str(exc.value)
     assert "OpenSSH" in str(exc.value)
+
+
+def test_close_stops_the_forward():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel, try_connect
+
+    tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ok.sh"))
+    port = tunnel.local_port
+    assert try_connect(port)
+
+    tunnel.close()
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if not try_connect(port):
+            break
+        time.sleep(0.05)
+    assert not try_connect(port)
+
+
+def test_close_is_idempotent():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ok.sh"))
+    tunnel.close()
+    tunnel.close()
+
+
+def test_close_falls_back_to_sigkill():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    tunnel = start_tunnel(minimal_config(), spawn_path=fake_ssh("fake-ssh-ignore-sigterm.sh"))
+
+    started = time.monotonic()
+    tunnel.close(grace=0.5)
+    elapsed = time.monotonic() - started
+
+    assert tunnel._proc.poll() is not None
+    assert 0.4 <= elapsed < 5.0
+
+
+def test_close_does_not_fire_the_runtime_exit_callback():
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    fired = []
+    tunnel = start_tunnel(
+        minimal_config(),
+        spawn_path=fake_ssh("fake-ssh-ok.sh"),
+        on_runtime_exit=lambda code, tail: fired.append((code, tail)),
+    )
+
+    tunnel.close()
+    time.sleep(0.3)
+
+    assert fired == []
+
+
+def test_runtime_exit_callback_fires_when_the_tunnel_dies():
+    import threading
+
+    from mcp_clickhouse.ssh.tunnel import start_tunnel
+
+    fired = threading.Event()
+    captured = {}
+
+    def on_exit(code, tail):
+        captured["code"] = code
+        fired.set()
+
+    tunnel = start_tunnel(
+        minimal_config(),
+        spawn_path=fake_ssh("fake-ssh-ok.sh"),
+        on_runtime_exit=on_exit,
+    )
+    tunnel._proc.kill()
+
+    assert fired.wait(timeout=5.0), "on_runtime_exit never fired"
+    assert captured["code"] is not None
