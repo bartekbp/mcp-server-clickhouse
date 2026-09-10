@@ -1,0 +1,104 @@
+import socket
+import time
+
+import pytest
+
+from mcp_clickhouse.ssh.config import SshTunnelConfig
+from mcp_clickhouse.ssh.tunnel import (
+    TunnelError,
+    build_ssh_argv,
+    pick_free_port,
+    wait_for_tcp_ready,
+)
+
+
+def minimal_config(**overrides) -> SshTunnelConfig:
+    base = {
+        "ssh_host": "bastion.example.com",
+        "remote_host": "ch.internal",
+        "remote_port": 8443,
+    }
+    base.update(overrides)
+    return SshTunnelConfig(**base)
+
+
+def test_pick_free_port_returns_a_bindable_port():
+    port = pick_free_port()
+
+    assert 1024 < port <= 65535
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", port))
+
+
+def test_pick_free_port_varies():
+    ports = {pick_free_port() for _ in range(5)}
+    assert len(ports) > 1
+
+
+def test_build_ssh_argv_minimal():
+    argv = build_ssh_argv(minimal_config(), 34567)
+
+    assert argv == [
+        "-N",
+        "-T",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-L",
+        "34567:ch.internal:8443",
+        "bastion.example.com",
+    ]
+
+
+def test_build_ssh_argv_includes_optional_flags():
+    cfg = minimal_config(ssh_user="ec2-user", ssh_port=2222, ssh_key="/tmp/key.pem")
+
+    argv = build_ssh_argv(cfg, 1234)
+
+    assert argv[-9:] == [
+        "-L",
+        "1234:ch.internal:8443",
+        "-l",
+        "ec2-user",
+        "-p",
+        "2222",
+        "-i",
+        "/tmp/key.pem",
+        "bastion.example.com",
+    ]
+
+
+def test_build_ssh_argv_expands_home_in_key_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    argv = build_ssh_argv(minimal_config(ssh_key="~/.ssh/id_ed25519"), 1234)
+
+    assert argv[argv.index("-i") + 1] == str(tmp_path / ".ssh/id_ed25519")
+
+
+def test_wait_for_tcp_ready_returns_once_port_accepts():
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+
+        wait_for_tcp_ready(port, timeout=2.0)
+
+
+def test_wait_for_tcp_ready_times_out_on_dead_port():
+    port = pick_free_port()
+
+    started = time.monotonic()
+    with pytest.raises(TunnelError) as exc:
+        wait_for_tcp_ready(port, timeout=0.3)
+    elapsed = time.monotonic() - started
+
+    assert str(port) in str(exc.value)
+    assert 0.25 <= elapsed < 3.0
