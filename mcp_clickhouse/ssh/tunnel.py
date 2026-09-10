@@ -69,6 +69,9 @@ def build_ssh_argv(cfg: SshTunnelConfig, local_port: int) -> list[str]:
         argv += ["-p", str(cfg.ssh_port)]
     if cfg.ssh_key:
         argv += ["-i", os.path.expanduser(cfg.ssh_key)]
+    # Terminate option parsing so a host beginning with "-" can never be read
+    # as an ssh option (e.g. "-oProxyCommand=...").
+    argv.append("--")
     argv.append(cfg.ssh_host)
     return argv
 
@@ -80,23 +83,6 @@ def try_connect(port: int) -> bool:
             return True
     except OSError:
         return False
-
-
-def wait_for_tcp_ready(
-    port: int,
-    timeout: float,
-    interval: float = READINESS_POLL_INTERVAL,
-) -> None:
-    """Block until 127.0.0.1:port accepts a connection, or raise on timeout."""
-    deadline = time.monotonic() + timeout
-    while True:
-        if try_connect(port):
-            return
-        if time.monotonic() >= deadline:
-            raise TunnelError(
-                f"TCP readiness timeout: 127.0.0.1:{port} did not accept within {timeout}s"
-            )
-        time.sleep(interval)
 
 
 class _StderrTail(threading.Thread):

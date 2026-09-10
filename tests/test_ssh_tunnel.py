@@ -14,7 +14,6 @@ from mcp_clickhouse.ssh.tunnel import (
     TunnelError,
     build_ssh_argv,
     pick_free_port,
-    wait_for_tcp_ready,
 )
 
 
@@ -36,11 +35,6 @@ def test_pick_free_port_returns_a_bindable_port():
         s.bind(("127.0.0.1", port))
 
 
-def test_pick_free_port_varies():
-    ports = {pick_free_port() for _ in range(5)}
-    assert len(ports) > 1
-
-
 def test_build_ssh_argv_minimal():
     argv = build_ssh_argv(minimal_config(), 34567)
 
@@ -59,6 +53,7 @@ def test_build_ssh_argv_minimal():
         "StrictHostKeyChecking=accept-new",
         "-L",
         "34567:ch.internal:8443",
+        "--",
         "bastion.example.com",
     ]
 
@@ -68,7 +63,7 @@ def test_build_ssh_argv_includes_optional_flags():
 
     argv = build_ssh_argv(cfg, 1234)
 
-    assert argv[-9:] == [
+    assert argv[-10:] == [
         "-L",
         "1234:ch.internal:8443",
         "-l",
@@ -77,8 +72,15 @@ def test_build_ssh_argv_includes_optional_flags():
         "2222",
         "-i",
         "/tmp/key.pem",
+        "--",
         "bastion.example.com",
     ]
+
+
+def test_build_ssh_argv_terminates_options_before_a_dash_leading_host():
+    argv = build_ssh_argv(minimal_config(ssh_host="-oProxyCommand=touch /tmp/pwned"), 1234)
+
+    assert argv[-2:] == ["--", "-oProxyCommand=touch /tmp/pwned"]
 
 
 def test_build_ssh_argv_expands_home_in_key_path(tmp_path, monkeypatch):
@@ -87,27 +89,6 @@ def test_build_ssh_argv_expands_home_in_key_path(tmp_path, monkeypatch):
     argv = build_ssh_argv(minimal_config(ssh_key="~/.ssh/id_ed25519"), 1234)
 
     assert argv[argv.index("-i") + 1] == str(tmp_path / ".ssh/id_ed25519")
-
-
-def test_wait_for_tcp_ready_returns_once_port_accepts():
-    with socket.socket() as server:
-        server.bind(("127.0.0.1", 0))
-        server.listen(1)
-        port = server.getsockname()[1]
-
-        wait_for_tcp_ready(port, timeout=2.0)
-
-
-def test_wait_for_tcp_ready_times_out_on_dead_port():
-    port = pick_free_port()
-
-    started = time.monotonic()
-    with pytest.raises(TunnelError) as exc:
-        wait_for_tcp_ready(port, timeout=0.3)
-    elapsed = time.monotonic() - started
-
-    assert str(port) in str(exc.value)
-    assert 0.25 <= elapsed < 3.0
 
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "ssh"

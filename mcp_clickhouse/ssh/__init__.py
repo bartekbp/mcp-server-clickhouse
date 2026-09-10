@@ -17,7 +17,7 @@ from .tunnel import (
     build_ssh_argv,
     pick_free_port,
     start_tunnel,
-    wait_for_tcp_ready,
+    try_connect,
 )
 
 __all__ = [
@@ -32,5 +32,5 @@ __all__ = [
     "setup_ssh_tunnel_if_configured",
     "shutdown_ssh_tunnel",
     "start_tunnel",
-    "wait_for_tcp_ready",
+    "try_connect",
 ]

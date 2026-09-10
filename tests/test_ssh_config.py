@@ -97,7 +97,33 @@ def test_rejects_bad_ready_timeout(clean_env, bad):
     assert bad in str(exc.value)
 
 
+def test_reads_config_with_clickhouse_validation_enabled(clean_env):
+    """The production path: CLICKHOUSE_ENABLED is not disabled.
+
+    Every other test here relies on the clean_env fixture setting
+    CLICKHOUSE_ENABLED=false, which skips ClickHouseConfig's required-variable
+    validation. This one runs the way a real user does, so a change to upstream
+    validation that breaks tunnel configuration cannot pass unnoticed.
+    """
+    clean_env.setenv("CLICKHOUSE_ENABLED", "true")
+    clean_env.setenv("CLICKHOUSE_HOST", "ch.internal")
+    clean_env.setenv("CLICKHOUSE_USER", "reader")
+    clean_env.setenv("CLICKHOUSE_PASSWORD", "s3cret")
+    clean_env.setenv("CLICKHOUSE_SECURE", "true")
+    clean_env.setenv("CLICKHOUSE_SSH_HOST", "bastion.example.com")
+
+    cfg = get_ssh_tunnel_config()
+
+    assert cfg is not None
+    assert cfg.ssh_host == "bastion.example.com"
+    assert cfg.remote_host == "ch.internal"
+    assert cfg.remote_port == 8443
+
+
 def test_missing_clickhouse_host_is_a_clear_error(clean_env):
+    # Reachable only while ClickHouseConfig's validation is disabled, as the
+    # clean_env fixture does. With CLICKHOUSE_ENABLED unset or true, upstream's
+    # _validate_required_vars() raises about the missing host first.
     clean_env.setenv("CLICKHOUSE_SSH_HOST", "bastion")
 
     with pytest.raises(ValueError) as exc:
