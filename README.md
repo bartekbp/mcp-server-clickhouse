@@ -746,13 +746,18 @@ Set `CLICKHOUSE_SSH_HOST` to enable it. With that unset, nothing changes.
 |---|---|---|---|
 | `CLICKHOUSE_SSH_HOST` | to enable | — | Bastion / jump host. A `~/.ssh/config` `Host` alias works, including one with `ProxyJump` |
 | `CLICKHOUSE_SSH_USER` | no | ssh default | Login user on the bastion |
-| `CLICKHOUSE_SSH_PORT` | no | `22` | SSH port on the bastion |
+| `CLICKHOUSE_SSH_PORT` | no | ssh default (usually 22) | SSH port on the bastion |
 | `CLICKHOUSE_SSH_KEY` | no | ssh default | Identity file; `~` is expanded and the path is checked at startup |
 | `CLICKHOUSE_SSH_READY_TIMEOUT` | no | `10` | Seconds to wait for the forward to accept connections |
 
 `CLICKHOUSE_HOST` and `CLICKHOUSE_PORT` keep their usual meaning: the ClickHouse
 endpoint **as seen from the bastion**. You do not pick or manage a local port —
 a free one is chosen at startup.
+
+Your `~/.ssh/config` is honoured for the host you name, including `Hostname`,
+`ProxyJump`, and `IdentityFile`. Note the override direction: `CLICKHOUSE_SSH_USER`
+and `CLICKHOUSE_SSH_PORT` are passed as `-l` and `-p`, which **override** the `User`
+and `Port` of a matching `Host` alias. If your alias already works, leave both unset.
 
 When `CLICKHOUSE_SECURE=true`, the server also sets `CLICKHOUSE_SERVER_HOST_NAME`
 to the real ClickHouse host so TLS still verifies through the forward, unless you
@@ -787,9 +792,33 @@ Requirements and limits:
 - An OpenSSH client (`ssh`) on `PATH`. macOS and Linux only.
 - Key-based auth only — the forward is opened with `BatchMode=yes`, so a key that
   needs an interactive passphrase fails fast rather than hanging. Use `ssh-agent`.
+- The bastion's host key is accepted on first connection without prompting
+  (`StrictHostKeyChecking=accept-new`) and written to your `~/.ssh/known_hosts`.
+  That file is the only thing this feature writes to disk. A *changed* host key is
+  still refused, so an established bastion cannot be silently impersonated. This
+  option is passed on the command line, so it overrides a stricter
+  `StrictHostKeyChecking` you have set for that host in `~/.ssh/config`. If you want
+  strict trust-on-first-use, put the bastion's key in `known_hosts` yourself before
+  starting the server — one manual `ssh` login, or a hand-verified `ssh-keyscan`.
+- Only the `mcp-clickhouse` console script opens the tunnel, along with the
+  equivalent `python -m mcp_clickhouse.main`. Launch paths that load the server
+  object directly — the `fastmcp.json` entrypoint, or
+  `uv run fastmcp dev inspector mcp_clickhouse/mcp_server.py:mcp` — never call
+  `main()`, so no forward is opened and queries go straight at a ClickHouse host
+  that is not routable from your machine.
+- `SSH tunnel ready on 127.0.0.1:<port>` does not mean ClickHouse is reachable.
+  `ssh -L` binds the local listener as soon as authentication succeeds, whatever
+  the state of the remote target. With the bastion up but ClickHouse down, startup
+  looks clean and the first query fails with a connection reset *from `127.0.0.1`*;
+  the real cause appears only as an `[ssh] channel N: open failed: connect failed:
+  Connection refused` line at INFO level.
 - If the forward dies while the server is running, the server logs `ssh`'s stderr
   and exits so your MCP client can restart it. A silently dead forward would make
   every later query fail against a closed port.
+- If the server itself is killed with `SIGKILL` (`kill -9`), the `ssh` child
+  survives — reparented to pid 1, still holding the forward open — because there is
+  no portable POSIX way to tie a child's lifetime to its parent's; repeated hard
+  restarts therefore accumulate `ssh` processes and bastion sessions.
 
 #### MCP server and transport
 
