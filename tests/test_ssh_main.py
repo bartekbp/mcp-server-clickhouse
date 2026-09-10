@@ -1,6 +1,21 @@
+import signal
 from unittest import mock
 
+import pytest
+
 from mcp_clickhouse import main as main_module
+
+
+@pytest.fixture(autouse=True)
+def restore_sigterm():
+    """main() really installs a SIGTERM handler when a tunnel is present.
+
+    Without this, a test that exercises the tunnel path permanently rewires the
+    pytest process's SIGTERM disposition for every test that runs after it.
+    """
+    previous = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, previous)
 
 
 def test_main_runs_without_a_tunnel_when_unconfigured(clean_env):
@@ -11,12 +26,14 @@ def test_main_runs_without_a_tunnel_when_unconfigured(clean_env):
         mock.patch.object(main_module, "shutdown_ssh_tunnel") as shutdown,
         mock.patch.object(main_module.mcp, "run") as run,
         mock.patch.object(main_module, "setup_middleware"),
+        mock.patch.object(main_module, "_install_termination_handlers") as install_handlers,
     ):
         main_module.main()
 
     setup.assert_called_once_with()
     run.assert_called_once()
     shutdown.assert_not_called()
+    install_handlers.assert_not_called()
 
 
 def test_main_starts_the_tunnel_before_running_the_server(clean_env):
@@ -56,8 +73,6 @@ def test_main_closes_the_tunnel_when_the_server_raises(clean_env):
 
 
 def test_sigterm_handler_raises_system_exit():
-    import signal
-
     with mock.patch("signal.signal") as sig:
         main_module._install_termination_handlers()
 
