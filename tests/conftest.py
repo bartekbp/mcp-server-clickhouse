@@ -18,6 +18,12 @@ def clean_env(monkeypatch):
     Clears every variable the SSH tunnel reads or writes so a developer's real
     .env cannot leak into assertions, and lets monkeypatch restore os.environ
     when the test ends.
+
+    Sets CLICKHOUSE_ENABLED=false to disable ClickHouseConfig's required-variable
+    validation. These tests exercise only .host, .port, and .secure properties
+    and do not use the password or TLS validation paths, so skipping validation
+    avoids coupling these tests to a surface area the SSH tunnel task does not
+    consume.
     """
     for name in (
         "CLICKHOUSE_HOST",
@@ -34,5 +40,5 @@ def clean_env(monkeypatch):
         "CLICKHOUSE_SSH_READY_TIMEOUT",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test-password")
+    monkeypatch.setenv("CLICKHOUSE_ENABLED", "false")
     return monkeypatch
